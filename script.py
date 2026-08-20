@@ -1,5 +1,6 @@
-import requests, re, base64
-from urllib.parse import unquote, quote
+import re, base64
+from urllib.parse import quote, unquote
+from playwright.sync_api import sync_playwright
 
 URL = "https://tiagorrg.github.io/vless-checker/"
 FILE = "subscription.txt"
@@ -28,45 +29,40 @@ COUNTRY_MAP = {
     "Turkmenistan": "Туркмения", "Belarus": "Беларусь",
 }
 
-def extract_links():
-    resp = requests.get(URL, timeout=30)
-    resp.raise_for_status()
-    html = resp.text
-    # ищем vless:// или полностью закодированный vless%3A%2F%2F
-    patterns = [
-        r'vless://[^\s"\'<>]+',
-        r'vless%3A%2F%2F[^\s"\'<>]+'
-    ]
+def extract_links_rendered():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto(URL, wait_until="networkidle", timeout=60000)
+        html = page.content()
+        browser.close()
     raw_links = set()
-    for p in patterns:
-        raw_links.update(re.findall(p, html))
+    patterns = [r'vless://[^\s"\'<>]+', r'vless%3A%2F%2F[^\s"\'<>]+']
+    for pat in patterns:
+        raw_links.update(re.findall(pat, html))
     return raw_links
 
 def process_link(raw):
-    # если вся ссылка закодирована, декодируем полностью
-    if raw.startswith('vless%3A%2F%2F'):
+    if raw.startswith("vless%3A%2F%2F"):
         decoded = unquote(raw)
-        # после декодирования разделяем на base и name по '#'
-        if '#' in decoded:
-            base, name = decoded.split('#', 1)
+        if "#" in decoded:
+            base, name = decoded.split("#", 1)
         else:
-            base, name = decoded, ''
-        # base уже декодирован, но для валидности оставляем как есть (могли быть служебные символы)
-        return base, name, True  # base уже в читаемом виде, но может требовать кодирования
+            base, name = decoded, ""
+        return base, name
     else:
-        # обычная ссылка с закодированным именем
-        if '#' in raw:
-            base, name_encoded = raw.split('#', 1)
-            name = unquote(name_encoded)
+        if "#" in raw:
+            base, name_enc = raw.split("#", 1)
+            name = unquote(name_enc)
         else:
-            base, name = raw, ''
-        return base, name, False
+            base, name = raw, ""
+        return base, name
 
 def rename():
     links = []
-    seen_countries = {}
-    for raw in extract_links():
-        base, name, decoded_full = process_link(raw)
+    seen = {}
+    for raw in extract_links_rendered():
+        base, name = process_link(raw)
         if not name:
             continue
         country_en = None
@@ -76,15 +72,12 @@ def rename():
                 break
         if country_en:
             ru_name = COUNTRY_MAP[country_en]
-            idx = seen_countries.get(country_en, 0) + 1
-            seen_countries[country_en] = idx
+            idx = seen.get(country_en, 0) + 1
+            seen[country_en] = idx
             new_name = f"{ru_name} #{idx}"
         else:
             new_name = name
-        # собираем обратно: base как есть, имя кодируем
-        # если ссылка была полностью закодирована, base уже декодирован, но это ок
-        new_link = f"{base}#{quote(new_name)}"
-        links.append(new_link)
+        links.append(f"{base}#{quote(new_name)}")
     return links
 
 def main():
@@ -96,7 +89,7 @@ def main():
     encoded = base64.b64encode(content.encode()).decode()
     with open(FILE, "w", encoding="utf-8") as f:
         f.write(encoded)
-    print(f"written {len(links)} links to {FILE}")
+    print(f"written {len(links)} links")
 
 if __name__ == "__main__":
     main()
